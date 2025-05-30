@@ -1,11 +1,12 @@
+
 import time
 import logging
 import datetime
 import cv2
 import base64
 import numpy as np
-from contextlib import contextmanager
 from typing import Optional, List, Dict, Any
+from contextlib import contextmanager
 from threading import Thread, Event, Lock
 from tts_manager import TTSManager
 from door_lock import DoorLockController
@@ -38,11 +39,11 @@ class SecuritySystem:
         
         # Initialize components
         self.tts_manager = TTSManager()
-        self.door_lock = DoorLockController(tts_manager=self.tts_manager)
+        self.door_lock = DoorLockController()
         self.streaming_manager = StreamingManager(self)
         
         # Camera setup
-        self.video_capture = None
+        self.video_access = None
         self.camera_error_count = 0
         self.max_camera_errors = 5
         self._setup_camera()
@@ -50,20 +51,22 @@ class SecuritySystem:
         # Recognition settings
         self.known_face_names = []
         self.known_face_encodings = []
+        self.known_face_ids = {}  # Map names to WAREHOUSE_USER_ID
         self.last_recognition_time = 0
-        self.recognition_cooldown = 5
+        self.recognition_cooldown = 15
         
         # Thread safety for face data
         self.face_data_lock = Lock()
         
-        # Continuous recognition control
+        # Continuous recognition
         self.recognition_active = True
         self.recognition_thread = None
         self.shutdown_event = Event()
         
         # Server sync settings
-        self.server_api_url = os.getenv("SERVER_API_URL", "http://<server-ip>:3000/api/users")
-        self.api_key = os.getenv("SERVER_API_KEY", "your-api-key")
+        self.server_api_url = os.getenv("SERVER_API_URL", "https://apps.mediabox.bi:26875/administration/warehouse_users/")
+        self.access_log_url = os.getenv("SERVER_ACCESS_LOG_URL", "https://apps.mediabox.bi:26875/warehouse_access")
+        self.api_key = os.getenv("API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiaWF0IjoxNzUyMTYzNDQzLCJleHAiOjE3NTI0NTI2NDN9.-C7A-ME3yRUsvSOkpvlt4z9hXI1vQe1z1e1z1e1z1e4")
         self.sync_interval = 300  # Sync every 5 minutes
         self.sync_thread = None
         self.last_sync_time = 0
@@ -101,17 +104,17 @@ class SecuritySystem:
             for backend, backend_name in backends:
                 try:
                     self.logger.info(f"Attempting to initialize camera with {backend_name} backend (attempt {attempt + 1}/{max_retries})")
-                    self.video_capture = cv2.VideoCapture(0, backend)
-                    if self.video_capture.isOpened():
-                        self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-                        self.video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-                        self.video_capture.set(cv2.CAP_PROP_FPS, 15)
+                    self.video_access = cv2.VideoCapture(0, backend)
+                    if self.video_access.isOpened():
+                        self.video_access.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+                        self.video_access.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+                        self.video_access.set(cv2.CAP_PROP_FPS, 15)
                         self.logger.info(f"Camera initialized successfully with {backend_name} backend")
                         self.camera_error_count = 0
                         return
                     else:
-                        self.video_capture.release()
-                        self.video_capture = None
+                        self.video_access.release()
+                        self.video_access = None
                 except Exception as e:
                     self.logger.error(f"Camera initialization failed with {backend_name} backend: {e}")
             
@@ -167,8 +170,8 @@ class SecuritySystem:
                     self.logger.warning(f"Failed to capture frame ({self.camera_error_count}/{self.max_camera_errors})")
                     if self.camera_error_count >= self.max_camera_errors:
                         self.logger.error("Too many camera errors, attempting to reinitialize camera")
-                        if self.video_capture:
-                            self.video_capture.release()
+                        if self.video_access:
+                            self.video_access.release()
                         self._setup_camera()
                         self.camera_error_count = 0
                         if self.tts_manager:
@@ -249,7 +252,6 @@ class SecuritySystem:
                         self.logger.info(f"Person ID {person_id} ({name}) already synced, skipping")
                         continue
                     
-                    # Fix URL path
                     photo_url = photo_url.replace("\\", "/")
                     
                     try:
@@ -291,6 +293,8 @@ class SecuritySystem:
                     self.known_face_names.extend(new_names)
                     self.known_face_encodings.extend(new_encodings)
                     self.synced_person_ids.update(new_person_ids)
+                    for name, pid in zip(new_names, new_person_ids):
+                        self.known_face_ids[name] = pid
                 
                 self.logger.info(f"Synced {len(new_names)} new persons from server")
                 if self.tts_manager and new_names:
@@ -315,12 +319,12 @@ class SecuritySystem:
 
     def get_frame(self) -> Optional[np.ndarray]:
         """Get current camera frame"""
-        if not self.video_capture or not self.video_capture.isOpened():
+        if not self.video_access or not self.video_access.isOpened():
             self.logger.warning("Camera not initialized or not opened")
             return None
         
         try:
-            ret, frame = self.video_capture.read()
+            ret, frame = self.video_access.read()
             if not ret:
                 self.logger.warning("Failed to grab frame")
                 return None
@@ -457,21 +461,56 @@ class SecuritySystem:
             raise
 
     def _log_access_attempt(self, result: FaceRecognitionResult, frame: np.ndarray):
-        """Log access attempt"""
+        """Log access attempt to server"""
         try:
             image_base64 = self._image_to_base64(frame)
-            log_entry = {
+            with self.face_data_lock:
+                warehouse_user_id = self.known_face_ids.get(result.name)
+            
+            access_data = {
+                "WAREHOUSE_USER_ID": warehouse_user_id if warehouse_user_id else None,
+                "IMAGE": image_base64,
+                "STATUT": 1 if result.access_result == AccessResult.GRANTED else 0,
+                "DATE_TIMESTAMP": datetime.datetime.now().isoformat()
+            }
+            
+            max_retries = 3
+            retry_delay = 5
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(self.access_log_url, json=access_data, headers=headers, timeout=10)
+                    response.raise_for_status()
+                    self.logger.info(f"Access attempt logged to server for {result.name}")
+                    return
+                except requests.exceptions.RequestException as e:
+                    self.logger.error(f"Access log attempt {attempt + 1}/{max_retries} failed: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay * (2 ** attempt))
+                    else:
+                        self.logger.error("Failed to log access to server, storing offline")
+                        self.offline_logs.append({
+                            "person_id": result.person_id,
+                            "name": result.name,
+                            "access_granted": result.access_result == AccessResult.GRANTED,
+                            "confidence": result.confidence,
+                            "timestamp": access_data["DATE_TIMESTAMP"],
+                            "image": image_base64
+                        })
+                        if self.tts_manager:
+                            self.tts_manager.speak("log_server_failed")
+        
+        except Exception as e:
+            self.logger.error(f"Failed to log access attempt: {e}")
+            self.offline_logs.append({
                 "person_id": result.person_id,
                 "name": result.name,
                 "access_granted": result.access_result == AccessResult.GRANTED,
                 "confidence": result.confidence,
                 "timestamp": datetime.datetime.now().isoformat(),
                 "image": image_base64
-            }
-            self.offline_logs.append(log_entry)
-            self.logger.info(f"Access attempt logged: {result.name}")
-        except Exception as e:
-            self.logger.error(f"Failed to log access attempt: {e}")
+            })
 
     def _image_to_base64(self, frame: np.ndarray) -> str:
         """Convert frame to base64 string"""
@@ -485,12 +524,31 @@ class SecuritySystem:
     def sync_with_backend(self) -> bool:
         """Sync offline logs with backend"""
         try:
-            if self.offline_logs:
-                self.logger.info(f"Syncing {len(self.offline_logs)} logs with backend")
-                self.offline_logs.clear()
+            if not self.offline_logs:
+                return True
+            
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            for log in self.offline_logs[:]:  # Copy to allow removal
+                try:
+                    access_data = {
+                        "WAREHOUSE_USER_ID": self.known_face_ids.get(log["name"]),
+                        "IMAGE": log["image"],
+                        "STATUT": 1 if log["access_granted"] else 0,
+                        "DATE_TIMESTAMP": log["timestamp"]
+                    }
+                    response = requests.post(self.access_log_url, json=access_data, headers=headers, timeout=10)
+                    response.raise_for_status()
+                    self.offline_logs.remove(log)
+                    self.logger.info(f"Offline log synced for {log['name']}")
+                except Exception as e:
+                    self.logger.error(f"Failed to sync offline log: {e}")
+                    continue
+            
+            if not self.offline_logs:
                 if self.tts_manager:
                     self.tts_manager.speak("sync_successful")
-            return True
+                return True
+            return False
         except Exception as e:
             self.logger.error(f"Backend sync failed: {e}")
             if self.tts_manager:
@@ -575,8 +633,8 @@ class SecuritySystem:
         
         self.streaming_manager.stop_streaming()
         
-        if self.video_capture:
-            self.video_capture.release()
+        if self.video_access:
+            self.video_access.release()
         
         self.door_lock.cleanup()
         
