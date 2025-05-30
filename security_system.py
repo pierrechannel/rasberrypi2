@@ -13,8 +13,6 @@ from streaming import StreamingManager
 from models import FaceRecognitionResult
 from enums import AccessResult
 import requests
-import io
-import threading
 import os
 from dotenv import load_dotenv
 import re
@@ -64,12 +62,12 @@ class SecuritySystem:
         self.shutdown_event = Event()
         
         # Server sync settings
-        self.server_api_url = os.getenv("SERVER_API_URL", "http://<server-ip>:port/api/persons")
+        self.server_api_url = os.getenv("SERVER_API_URL", "http://<server-ip>:3000/api/users")
         self.api_key = os.getenv("SERVER_API_KEY", "your-api-key")
         self.sync_interval = 300  # Sync every 5 minutes
         self.sync_thread = None
         self.last_sync_time = 0
-        self.synced_person_ids = set()  # Track synced IDs to avoid duplicates
+        self.synced_person_ids = set()
         
         # Backend connection (for local logs)
         self.backend_api_url = "https://example.com/api"
@@ -92,7 +90,7 @@ class SecuritySystem:
     def _setup_camera(self):
         """Initialize camera with error handling and multiple backends"""
         backends = [
-            (cv2.CAP_DSHOW, "DirectShow"),  # Prioritize DSHOW to avoid MSMF error
+            (cv2.CAP_DSHOW, "DirectShow"),
             (cv2.CAP_MSMF, "MSMF"),
             (cv2.CAP_ANY, "Default")
         ]
@@ -105,7 +103,7 @@ class SecuritySystem:
                     self.logger.info(f"Attempting to initialize camera with {backend_name} backend (attempt {attempt + 1}/{max_retries})")
                     self.video_capture = cv2.VideoCapture(0, backend)
                     if self.video_capture.isOpened():
-                        self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # Lower resolution for Pi
+                        self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
                         self.video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
                         self.video_capture.set(cv2.CAP_PROP_FPS, 15)
                         self.logger.info(f"Camera initialized successfully with {backend_name} backend")
@@ -128,7 +126,6 @@ class SecuritySystem:
     def _load_known_faces(self):
         """Load known face encodings from storage"""
         self.logger.info("Loading known face encodings (mock implementation)")
-        # Placeholder: Load from file/database in production
         self.known_face_encodings = [None] * len(self.known_face_names)
 
     def _start_continuous_recognition(self):
@@ -177,7 +174,7 @@ class SecuritySystem:
                         if self.tts_manager:
                             self.tts_manager.speak("camera_error")
                 
-                time.sleep(1.0)  # 1 FPS for Raspberry Pi performance
+                time.sleep(1.0)
             except Exception as e:
                 self.logger.error(f"Recognition loop error: {e}")
                 time.sleep(1)
@@ -224,32 +221,41 @@ class SecuritySystem:
             try:
                 response = requests.get(self.server_api_url, headers=headers, timeout=10)
                 response.raise_for_status()
-                persons = response.json()
+                data = response.json()
+                
+                if data.get("statusCode") != 200:
+                    self.logger.error(f"API returned non-200 status: {data.get('statusCode')}")
+                    continue
+                
+                persons = data.get("result", {}).get("data", [])
                 
                 new_names = []
                 new_encodings = []
                 new_person_ids = []
                 
                 for person in persons:
-                    person_id = person.get("id")
-                    name = person.get("name")
-                    image_data = person.get("image")
+                    person_id = str(person.get("WAREHOUSE_USER_ID"))
+                    nom = person.get("NOM", "")
+                    prenom = person.get("PRENOM", "")
+                    photo_url = person.get("PHOTO")
                     
-                    if not all([person_id, name, image_data]):
+                    if not all([person_id, nom, prenom, photo_url]):
                         self.logger.warning(f"Skipping person with missing data: {person}")
                         continue
+                    
+                    name = f"{nom} {prenom}".strip()
                     
                     if person_id in self.synced_person_ids:
                         self.logger.info(f"Person ID {person_id} ({name}) already synced, skipping")
                         continue
                     
-                    # Validate base64 data
-                    if not re.match(r'^[A-Za-z0-9+/=]+$', image_data):
-                        self.logger.error(f"Invalid base64 data for {name}")
-                        continue
+                    # Fix URL path
+                    photo_url = photo_url.replace("\\", "/")
                     
                     try:
-                        image_bytes = base64.b64decode(image_data)
+                        image_response = requests.get(photo_url, headers=headers, timeout=10)
+                        image_response.raise_for_status()
+                        image_bytes = image_response.content
                         image_array = np.frombuffer(image_bytes, dtype=np.uint8)
                         image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
                         
@@ -257,7 +263,6 @@ class SecuritySystem:
                             self.logger.error(f"Failed to decode image for {name}")
                             continue
                         
-                        # Resize image for performance
                         if image.shape[0] > 240:
                             scale = 240 / image.shape[0]
                             image = cv2.resize(image, (0, 0), fx=scale, fy=scale)
@@ -282,7 +287,6 @@ class SecuritySystem:
                         self.logger.error(f"Error processing image for {name}: {e}")
                         continue
                 
-                # Update face data safely
                 with self.face_data_lock:
                     self.known_face_names.extend(new_names)
                     self.known_face_encodings.extend(new_encodings)
@@ -501,7 +505,7 @@ class SecuritySystem:
             
             with self.face_data_lock:
                 if name in self.known_face_names:
-                    raise ValueError(f"Person '{name}' already exists in the system")
+                    raise ValueError(f"{name} already exists")
                 
                 self.known_face_names.append(name)
                 
@@ -512,13 +516,13 @@ class SecuritySystem:
                         encodings = face_recognition.face_encodings(rgb_image)
                         if encodings:
                             face_encoding = encodings[0]
-                            self.logger.info(f"Face encoding generated for {name}")
+                            self.logger.info(f"Face encoding for {name} generated")
                         else:
-                            self.logger.warning(f"No face detected in image for {name}")
-                            raise ValueError("No face detected in provided image")
+                            self.logger.warning(f"No face detected for {name}")
+                            raise ValueError("No face detected in image")
                     except Exception as e:
-                        self.logger.error(f"Failed to generate face encoding for {name}: {e}")
-                        raise ValueError(f"Failed to process image: {str(e)}")
+                        self.logger.error(f"Failed to encode {name}: {e}")
+                        raise ValueError(f"Image processing failed: {str(e)}")
                 
                 self.known_face_encodings.append(face_encoding)
             
@@ -578,5 +582,5 @@ class SecuritySystem:
         
         if self.tts_manager:
             self.tts_manager.cleanup()
-        
+            
         self.logger.info("Security system shutdown complete")

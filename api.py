@@ -456,5 +456,12 @@ def create_app(security_system: SecuritySystem):
             "error_count": security_system.camera_error_count,
             "last_error": "None" if security_system.camera_error_count == 0 else "Camera unavailable"
         })
+    @app.route('/sync/status', methods=['GET'])
+    def sync_status():
+        return jsonify({
+            "last_sync_time": security_system.last_sync_time,
+            "synced_persons": len(security_system.known_face_names),
+            "sync_error": "None" if security_system.last_sync_time else "Sync failed"
+        })
 
     return app
