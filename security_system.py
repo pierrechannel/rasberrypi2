@@ -4,9 +4,10 @@ import logging
 import datetime
 import cv2
 import base64
+import io
 import numpy as np
-from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
+from typing import Optional, List, Dict
 from threading import Thread, Event, Lock
 from tts_manager import TTSManager
 from door_lock import DoorLockController
@@ -64,9 +65,8 @@ class SecuritySystem:
         self.shutdown_event = Event()
         
         # Server sync settings
-        self.server_api_url = os.getenv("SERVER_API_URL", "https://apps.mediabox.bi:26875/administration/warehouse_users/")
-        self.access_log_url = os.getenv("SERVER_ACCESS_LOG_URL", "https://apps.mediabox.bi:26875/warehouse_acces/create")
-        self.api_key = os.getenv("API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiaWF0IjoxNzUyMTYzNDQzLCJleHAiOjE3NTI0NTI2NDN9.-C7A-ME3yRUsvSOkpvlt4z9hXI1vQe1z1e1z1e1z1e4")
+        self.server_api_url = os.getenv("SERVER_API_URL", "https://apps.mediabox.bi:258/api/users")
+        self.access_log_url = os.getenv("SERVER_ACCESS_LOG_URL", "https://apps.mediabox.bi:258/warehouse_access/create")
         self.sync_interval = 300  # Sync every 5 minutes
         self.sync_thread = None
         self.last_sync_time = 0
@@ -218,11 +218,10 @@ class SecuritySystem:
         
         max_retries = 3
         retry_delay = 5
-        headers = {"Authorization": f"Bearer {self.api_key}"}
         
         for attempt in range(max_retries):
             try:
-                response = requests.get(self.server_api_url, headers=headers, timeout=10)
+                response = requests.get(self.server_api_url, timeout=10)
                 response.raise_for_status()
                 data = response.json()
                 
@@ -255,7 +254,7 @@ class SecuritySystem:
                     photo_url = photo_url.replace("\\", "/")
                     
                     try:
-                        image_response = requests.get(photo_url, headers=headers, timeout=10)
+                        image_response = requests.get(photo_url, timeout=10)
                         image_response.raise_for_status()
                         image_bytes = image_response.content
                         image_array = np.frombuffer(image_bytes, dtype=np.uint8)
@@ -467,39 +466,62 @@ class SecuritySystem:
             with self.face_data_lock:
                 warehouse_user_id = self.known_face_ids.get(result.name)
             
-            access_data = {
-                "WAREHOUSE_USER_ID": warehouse_user_id if warehouse_user_id else None,
-                "IMAGE": image_base64,
-                "STATUT": 1 if result.access_result == AccessResult.GRANTED else 0,
-                "DATE_TIMESTAMP": datetime.datetime.now().isoformat()
+            # Primary attempt: File upload
+            _, buffer = cv2.imencode('.jpg', frame)
+            files = {"image": ("access.jpg", buffer, "image/jpeg")}
+            data = {
+                "WAREHOUSE_USER_ID": warehouse_user_id if warehouse_user_id else "",
+                "STATUT": 1 if result.access_result == AccessResult.GRANTED else 2,
+                "DATE_SAVE": datetime.datetime.now().isoformat() + "Z"
             }
             
             max_retries = 3
             retry_delay = 5
-            headers = {"Authorization": f"Bearer {self.api_key}"}
             
             for attempt in range(max_retries):
                 try:
-                    response = requests.post(self.access_log_url, json=access_data, headers=headers, timeout=10)
+                    response = requests.post(self.access_log_url, files=files, data=data, timeout=10)
                     response.raise_for_status()
-                    self.logger.info(f"Access attempt logged to server for {result.name}")
+                    self.logger.info(f"Access attempt logged to server (file upload) for {result.name}")
                     return
                 except requests.exceptions.RequestException as e:
-                    self.logger.error(f"Access log attempt {attempt + 1}/{max_retries} failed: {e}")
+                    self.logger.error(f"File upload attempt {attempt + 1}/{max_retries} failed: {e}")
+                    if hasattr(response, 'status_code') and response.status_code == 422:
+                        self.logger.error(f"Server response: {response.text}")
                     if attempt < max_retries - 1:
                         time.sleep(retry_delay * (2 ** attempt))
-                    else:
-                        self.logger.error("Failed to log access to server, storing offline")
-                        self.offline_logs.append({
-                            "person_id": result.person_id,
-                            "name": result.name,
-                            "access_granted": result.access_result == AccessResult.GRANTED,
-                            "confidence": result.confidence,
-                            "timestamp": access_data["DATE_TIMESTAMP"],
-                            "image": image_base64
-                        })
-                        if self.tts_manager:
-                            self.tts_manager.speak("log_server_failed")
+            
+            # Fallback: Minimal payload without image
+            minimal_data = {
+                "WAREHOUSE_USER_ID": warehouse_user_id if warehouse_user_id else "",
+                "STATUT": 1 if result.access_result == AccessResult.GRANTED else 2,
+                "DATE_SAVE": datetime.datetime.now().isoformat() + "Z"
+            }
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(self.access_log_url, json=minimal_data, timeout=10)
+                    response.raise_for_status()
+                    self.logger.info(f"Access attempt logged to server (minimal) for {result.name}")
+                    return
+                except requests.exceptions.RequestException as e:
+                    self.logger.error(f"Minimal log attempt {attempt + 1}/{max_retries} failed: {e}")
+                    if hasattr(response, 'status_code') and response.status_code == 422:
+                        self.logger.error(f"Server response: {response.text}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay * (2 ** attempt))
+            
+            # Store offline on failure
+            self.logger.error("Failed to log access to server, storing offline")
+            self.offline_logs.append({
+                "person_id": result.person_id,
+                "name": result.name,
+                "access_granted": result.access_result == AccessResult.GRANTED,
+                "confidence": result.confidence,
+                "timestamp": data["DATE_SAVE"],
+                "image": image_base64
+            })
+            if self.tts_manager:
+                self.tts_manager.speak("log_server_failed")
         
         except Exception as e:
             self.logger.error(f"Failed to log access attempt: {e}")
@@ -508,7 +530,7 @@ class SecuritySystem:
                 "name": result.name,
                 "access_granted": result.access_result == AccessResult.GRANTED,
                 "confidence": result.confidence,
-                "timestamp": datetime.datetime.now().isoformat(),
+                "timestamp": datetime.datetime.now().isoformat() + "Z",
                 "image": image_base64
             })
 
@@ -527,16 +549,16 @@ class SecuritySystem:
             if not self.offline_logs:
                 return True
             
-            headers = {"Authorization": f"Bearer {self.api_key}"}
-            for log in self.offline_logs[:]:  # Copy to allow removal
+            for log in self.offline_logs[:]:
                 try:
-                    access_data = {
-                        "WAREHOUSE_USER_ID": self.known_face_ids.get(log["name"]),
-                        "IMAGE": log["image"],
-                        "STATUT": 1 if log["access_granted"] else 0,
-                        "DATE_TIMESTAMP": log["timestamp"]
+                    _, buffer = cv2.imencode('.jpg', np.frombuffer(base64.b64decode(log["image"]), dtype=np.uint8))
+                    files = {"image": ("access.jpg", buffer, "image/jpeg")}
+                    data = {
+                        "WAREHOUSE_USER_ID": self.known_face_ids.get(log["name"], ""),
+                        "STATUT": 1 if log["access_granted"] else 2,
+                        "DATE_SAVE": log["timestamp"]
                     }
-                    response = requests.post(self.access_log_url, json=access_data, headers=headers, timeout=10)
+                    response = requests.post(self.access_log_url, files=files, data=data, timeout=10)
                     response.raise_for_status()
                     self.offline_logs.remove(log)
                     self.logger.info(f"Offline log synced for {log['name']}")
