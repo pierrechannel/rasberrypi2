@@ -379,6 +379,7 @@ def create_app(security_system: SecuritySystem):
             })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+    
 
     @app.route('/config', methods=['GET', 'POST'])
     def system_config():
@@ -412,5 +413,40 @@ def create_app(security_system: SecuritySystem):
                 })
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
+        # Add to api.py in the create_app function before return app
+    @app.route('/recognition/control', methods=['POST'])
+    def recognition_control():
+        """Control continuous face recognition"""
+        try:
+            data = request.get_json() or {}
+            action = data.get('action')  # 'start' or 'stop'
+            
+            if action == 'start':
+                security_system._start_continuous_recognition()
+                return jsonify({
+                    "success": True,
+                    "message": "Continuous face recognition started",
+                    "active": security_system.recognition_active
+                })
+            elif action == 'stop':
+                security_system._stop_continuous_recognition()
+                return jsonify({
+                    "success": True,
+                    "message": "Continuous face recognition stopped",
+                    "active": security_system.recognition_active
+                })
+            else:
+                return jsonify({"error": "Invalid action. Use 'start' or 'stop'"}), 400
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/recognition/status', methods=['GET'])
+    def recognition_status():
+        """Get continuous face recognition status"""
+        return jsonify({
+            "active": security_system.recognition_active,
+            "last_recognition_time": security_system.last_recognition_time,
+            "known_persons_count": len(security_system.known_face_names)
+        })
 
     return app
