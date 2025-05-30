@@ -449,4 +449,12 @@ def create_app(security_system: SecuritySystem):
             "known_persons_count": len(security_system.known_face_names)
         })
 
+    @app.route('/camera/status', methods=['GET'])
+    def camera_status():
+        return jsonify({
+            "camera_active": security_system.video_capture and security_system.video_capture.isOpened(),
+            "error_count": security_system.camera_error_count,
+            "last_error": "None" if security_system.camera_error_count == 0 else "Camera unavailable"
+        })
+
     return app
