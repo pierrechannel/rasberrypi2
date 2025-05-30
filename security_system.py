@@ -65,7 +65,7 @@ class SecuritySystem:
         
         # Server sync settings
         self.server_api_url = os.getenv("SERVER_API_URL", "https://apps.mediabox.bi:26875/administration/warehouse_users/")
-        self.access_log_url = os.getenv("SERVER_ACCESS_LOG_URL", "https://apps.mediabox.bi:26875/warehouse_access")
+        self.access_log_url = os.getenv("SERVER_ACCESS_LOG_URL", "https://apps.mediabox.bi:26875/warehouse_acces/create")
         self.api_key = os.getenv("API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiaWF0IjoxNzUyMTYzNDQzLCJleHAiOjE3NTI0NTI2NDN9.-C7A-ME3yRUsvSOkpvlt4z9hXI1vQe1z1e1z1e1z1e4")
         self.sync_interval = 300  # Sync every 5 minutes
         self.sync_thread = None
