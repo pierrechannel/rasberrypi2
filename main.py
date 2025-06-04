@@ -16,8 +16,6 @@ security_system = SecuritySystem()
 # Create Flask app
 app = create_app(security_system)
 
-
-
 def signal_handler(sig, frame):
     """Handle shutdown signals"""
     logger.info("Shutting down server...")
@@ -34,7 +32,7 @@ if __name__ == '__main__':
         app.run(
             host='0.0.0.0',
             port=5002,
-            debug=False,  # Set to False for production
+            debug=False,
             threaded=True,
             use_reloader=False
         )
@@ -45,5 +43,3 @@ if __name__ == '__main__':
     finally:
         logger.info("Shutting down server...")
         security_system.cleanup()
-
-

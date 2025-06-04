@@ -810,3 +810,46 @@ class SecuritySystem:
                 self.logger.error(f"Enhanced server sync loop error: {e}")
                 
                 time.sleep(60)
+    def process_face_recognition_enhanced(self, frame: np.ndarray, bypass_cooldown: bool = False) -> List[FaceRecognitionResult]:
+        """Enhanced face recognition with optional cooldown bypass"""
+        results = []
+        if frame is None:
+            return results
+        if not bypass_cooldown:
+            with self.recognition_cooldown_check():
+                # ... (existing face recognition code)
+                return results
+        else:
+            # ... (existing face recognition code without cooldown check)
+            try:
+                enhanced_frame = self.image_processor.enhance_image_quality(frame)
+                aligned_faces = self.image_processor.detect_and_align_faces(enhanced_frame)
+                with self.face_data_lock:
+                    known_encodings = [enc for enc in self.known_face_encodings if enc is not None]
+                    known_names = self.known_face_names.copy()
+                for face_image, face_location in aligned_faces:
+                    optimized_face = self.image_processor.optimize_face_for_encoding(face_image)
+                    rgb_face = cv2.cvtColor(optimized_face, cv2.COLOR_BGR2RGB)
+                    face_encodings = face_recognition.face_encodings(
+                        rgb_face, 
+                        num_jitters=10, 
+                        model='large'
+                    )
+                    if not face_encodings:
+                        continue
+                    face_encoding = face_encodings[0]
+                    name, confidence, access_result = self._enhanced_face_matching(
+                        face_encoding, known_encodings, known_names
+                    )
+                    result = FaceRecognitionResult(
+                        person_id=self.known_face_ids.get(name, f"ID_{hash(name) % 1000}"),
+                        name=name,
+                        confidence=confidence,
+                        location=face_location,
+                        access_result=access_result
+                    )
+                    results.append(result)
+                    self.logger.info(f"Enhanced recognition: {name} with confidence {confidence:.2f}")
+            except Exception as e:
+                self.logger.error(f"Enhanced face recognition error: {e}")
+            return results
