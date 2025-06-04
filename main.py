@@ -2,7 +2,6 @@ import signal
 import logging
 from security_system import SecuritySystem
 from api import create_app
-from streaming import StreamingManager
 
 # Configure logging
 logging.basicConfig(
@@ -13,27 +12,11 @@ logger = logging.getLogger(__name__)
 
 # Initialize security system
 security_system = SecuritySystem()
-streaming-manager=StreamingManager()
 
 # Create Flask app
 app = create_app(security_system)
 
-# In your API module
-@app.route('/streaming/start', methods=['POST'])
-def start_streaming():
-    if streaming_manager.start_streaming():
-        return {"status": "success", "message": "Streaming started"}
-    return {"status": "error", "message": "Failed to start streaming"}, 400
 
-@app.route('/streaming/stop', methods=['POST'])
-def stop_streaming():
-    if streaming_manager.stop_streaming():
-        return {"status": "success", "message": "Streaming stopped"}
-    return {"status": "error", "message": "Streaming not active"}, 400
-
-@app.route('/streaming/stats', methods=['GET'])
-def get_streaming_stats():
-    return streaming_manager.get_streaming_stats()
 
 def signal_handler(sig, frame):
     """Handle shutdown signals"""
