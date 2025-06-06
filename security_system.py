@@ -2,183 +2,35 @@ import time
 import logging
 import datetime
 import cv2
-import base64
-from typing import Any, Optional, List, Dict, Tuple
-from threading import Thread, Event, Lock
-from tts_manager import TTSManager
-from door_lock import DoorLockController
-from streaming import StreamingManager
-from models import FaceRecognitionResult
-from enums import AccessResult
 import requests
 import os
-from dotenv import load_dotenv
 import numpy as np
+from typing import Any, Optional, List, Dict, Tuple
+from threading import Thread, Event, Lock
 from contextlib import contextmanager
-from collections import deque  # Required for recognition_history
-import random  # Required for _mock_recognition
+from collections import deque
+import random
 
 try:
     import face_recognition
-    import dlib
     FACE_RECOGNITION_AVAILABLE = True
 except ImportError:
     FACE_RECOGNITION_AVAILABLE = False
     print("WARNING: face_recognition not available. Falling back to mock recognition.")
 
+from image_processor import EnhancedImageProcessor
+from data_poster import RobustDataPoster
+from tts_manager import TTSManager
+from door_lock import DoorLockController
+from streaming import StreamingManager
+from models import FaceRecognitionResult
+from enums import AccessResult
+from dotenv import load_dotenv
+
 # Load environment variables
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-class EnhancedImageProcessor:
-    """Enhanced image processing for better face recognition accuracy"""
-    
-    @staticmethod
-    def enhance_image_quality(image: np.ndarray) -> np.ndarray:
-        """Apply image enhancement techniques for better face recognition"""
-        try:
-            lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-            l, a, b = cv2.split(lab)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            l = clahe.apply(l)
-            enhanced = cv2.merge([l, a, b])
-            enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
-            enhanced = cv2.bilateralFilter(enhanced, 9, 75, 75)
-            kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
-            enhanced = cv2.filter2D(enhanced, -1, kernel)
-            return enhanced
-        except Exception as e:
-            logger.error(f"Image enhancement failed: {e}")
-            return image
-    
-    @staticmethod
-    def detect_and_align_faces(image: np.ndarray) -> List[Tuple[np.ndarray, Tuple[int, int, int, int]]]:
-        """Detect faces and align them for better recognition accuracy"""
-        if not FACE_RECOGNITION_AVAILABLE:
-            return [(image, (0, 0, image.shape[0], image.shape[1]))]
-        try:
-            detector = dlib.get_frontal_face_detector()
-            predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            faces = detector(gray)
-            aligned_faces = []
-            for face in faces:
-                landmarks = predictor(gray, face)
-                left_eye = np.array([(landmarks.part(i).x, landmarks.part(i).y) 
-                                   for i in range(36, 42)]).mean(axis=0).astype(int)
-                right_eye = np.array([(landmarks.part(i).x, landmarks.part(i).y) 
-                                    for i in range(42, 48)]).mean(axis=0).astype(int)
-                dy = right_eye[1] - left_eye[1]
-                dx = right_eye[0] - left_eye[0]
-                angle = np.degrees(np.arctan2(dy, dx))
-                center = ((face.left() + face.right()) // 2, (face.top() + face.bottom()) // 2)
-                M = cv2.getRotationMatrix2D(center, angle, 1.0)
-                aligned = cv2.warpAffine(image, M, (image.shape[1], image.shape[0]))
-                face_region = aligned[face.top():face.bottom(), face.left():face.right()]
-                face_location = (face.top(), face.right(), face.bottom(), face.left())
-                aligned_faces.append((face_region, face_location))
-            return aligned_faces if aligned_faces else [(image, (0, 0, image.shape[0], image.shape[1]))]
-        except Exception as e:
-            logger.error(f"Face alignment failed: {e}")
-            face_locations = face_recognition.face_locations(image)
-            if face_locations:
-                top, right, bottom, left = face_locations[0]
-                face_region = image[top:bottom, left:right]
-                return [(face_region, face_locations[0])]
-            return [(image, (0, 0, image.shape[0], image.shape[1]))]
-    
-    @staticmethod
-    def optimize_face_for_encoding(face_image: np.ndarray, target_size: Tuple[int, int] = (224, 224)) -> np.ndarray:
-        """Optimize face image for encoding generation"""
-        try:
-            resized = cv2.resize(face_image, target_size, interpolation=cv2.INTER_CUBIC)
-            normalized = cv2.normalize(resized, None, 0, 255, cv2.NORM_MINMAX)
-            gamma = 1.2
-            gamma_corrected = np.power(normalized / 255.0, 1.0 / gamma)
-            gamma_corrected = (gamma_corrected * 255).astype(np.uint8)
-            return gamma_corrected
-        except Exception as e:
-            logger.error(f"Face optimization failed: {e}")
-            return face_image
-
-class RobustDataPoster:
-    """Enhanced data posting with retry mechanisms - No offline storage"""
-    
-    def __init__(self, max_retries: int = 5, base_delay: float = 1.0):
-        self.max_retries = max_retries
-        self.base_delay = base_delay
-        self.session = requests.Session()
-        self.session.timeout = 15
-        
-    def post_with_exponential_backoff(self, url: str, data: Dict = None, files: Dict = None, 
-                                    json_data: Dict = None) -> Tuple[bool, Optional[Dict]]:
-        """Post data with exponential backoff retry strategy"""
-        for attempt in range(self.max_retries):
-            try:
-                delay = self.base_delay * (2 ** attempt)
-                if attempt > 0:
-                    logger.info(f"Retry attempt {attempt + 1}/{self.max_retries} after {delay}s delay")
-                    time.sleep(delay)
-                if files:
-                    response = self.session.post(url, data=data, files=files)
-                elif json_data:
-                    response = self.session.post(url, json=json_data, 
-                                               headers={'Content-Type': 'application/json'})
-                else:
-                    response = self.session.post(url, data=data)
-                response.raise_for_status()
-                try:
-                    return True, response.json()
-                except:
-                    return True, {"status": "success", "message": "Posted successfully"}
-            except requests.exceptions.Timeout:
-                logger.error(f"Timeout on attempt {attempt + 1}")
-                continue
-            except requests.exceptions.ConnectionError:
-                logger.error(f"Connection error on attempt {attempt + 1}")
-                continue
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code in [400, 401, 403, 404]:
-                    logger.error(f"Client error {e.response.status_code}: {e.response.text}")
-                    return False, {"error": f"Client error: {e.response.status_code}"}
-                logger.error(f"HTTP error on attempt {attempt + 1}: {e}")
-                continue
-            except Exception as e:
-                logger.error(f"Unexpected error on attempt {attempt + 1}: {e}")
-                continue
-        return False, {"error": "Max retries exceeded"}
-    
-    def get_with_exponential_backoff(self, url: str, params: Dict = None) -> Tuple[bool, Optional[Dict]]:
-        """GET request with exponential backoff retry strategy"""
-        for attempt in range(self.max_retries):
-            try:
-                delay = self.base_delay * (2 ** attempt)
-                if attempt > 0:
-                    logger.info(f"GET retry attempt {attempt + 1}/{self.max_retries} after {delay}s delay")
-                    time.sleep(delay)
-                response = self.session.get(url, params=params)
-                response.raise_for_status()
-                try:
-                    return True, response.json()
-                except:
-                    return True, {"status": "success", "message": "Request successful"}
-            except requests.exceptions.Timeout:
-                logger.error(f"GET timeout on attempt {attempt + 1}")
-                continue
-            except requests.exceptions.ConnectionError:
-                logger.error(f"GET connection error on attempt {attempt + 1}")
-                continue
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code in [400, 401, 403, 404]:
-                    logger.error(f"GET client error {e.response.status_code}: {e.response.text}")
-                    return False, {"error": f"Client error: {e.response.status_code}"}
-                logger.error(f"GET HTTP error on attempt {attempt + 1}: {e}")
-                continue
-            except Exception as e:
-                logger.error(f"GET unexpected error on attempt {attempt + 1}: {e}")
-                continue
-        return False, {"error": "Max retries exceeded"}
 
 class SecuritySystem:
     """Enhanced security system with improved face recognition - No offline storage"""
@@ -259,45 +111,73 @@ class SecuritySystem:
     def _load_known_faces_enhanced(self):
         """Load known faces with enhanced processing"""
         self.logger.info("Loading known face encodings with enhanced processing")
-        # Implementation would load from server via sync_with_server
         self.sync_with_server()
 
-    def process_face_recognition_enhanced(self, frame: np.ndarray) -> List[FaceRecognitionResult]:
-        """Enhanced face recognition with improved accuracy"""
+    def process_face_recognition_enhanced(self, frame: np.ndarray, bypass_cooldown: bool = False) -> List[FaceRecognitionResult]:
+        """Enhanced face recognition with optional cooldown bypass"""
         results = []
         if frame is None:
             return results
-        if not FACE_RECOGNITION_AVAILABLE:
-            return self._mock_recognition(frame)
         try:
-            enhanced_frame = self.image_processor.enhance_image_quality(frame)
-            aligned_faces = self.image_processor.detect_and_align_faces(enhanced_frame)
-            with self.face_data_lock:
-                known_encodings = [enc for enc in self.known_face_encodings if enc is not None]
-                known_names = self.known_face_names.copy()
-            for face_image, face_location in aligned_faces:
-                optimized_face = self.image_processor.optimize_face_for_encoding(face_image)
-                rgb_face = cv2.cvtColor(optimized_face, cv2.COLOR_BGR2RGB)
-                face_encodings = face_recognition.face_encodings(
-                    rgb_face, 
-                    num_jitters=10, 
-                    model='large'
-                )
-                if not face_encodings:
-                    continue
-                face_encoding = face_encodings[0]
-                name, confidence, access_result = self._enhanced_face_matching(
-                    face_encoding, known_encodings, known_names
-                )
-                result = FaceRecognitionResult(
-                    person_id=self.known_face_ids.get(name, f"ID_{hash(name) % 1000}"),
-                    name=name,
-                    confidence=confidence,
-                    location=face_location,
-                    access_result=access_result
-                )
-                results.append(result)
-                self.logger.info(f"Enhanced recognition: {name} with confidence {confidence:.2f}")
+            if not bypass_cooldown:
+                with self.recognition_cooldown_check():
+                    enhanced_frame = self.image_processor.enhance_image_quality(frame)
+                    aligned_faces = self.image_processor.detect_and_align_faces(enhanced_frame)
+                    with self.face_data_lock:
+                        known_encodings = [enc for enc in self.known_face_encodings if enc is not None]
+                        known_names = self.known_face_names.copy()
+                    for face_image, face_location in aligned_faces:
+                        optimized_face = self.image_processor.optimize_face_for_encoding(face_image)
+                        rgb_face = cv2.cvtColor(optimized_face, cv2.COLOR_BGR2RGB)
+                        face_encodings = face_recognition.face_encodings(
+                            rgb_face, 
+                            num_jitters=10, 
+                            model='large'
+                        )
+                        if not face_encodings:
+                            continue
+                        face_encoding = face_encodings[0]
+                        name, confidence, access_result = self._enhanced_face_matching(
+                            face_encoding, known_encodings, known_names
+                        )
+                        result = FaceRecognitionResult(
+                            person_id=self.known_face_ids.get(name, f"ID_{hash(name) % 1000}"),
+                            name=name,
+                            confidence=confidence,
+                            location=face_location,
+                            access_result=access_result
+                        )
+                        results.append(result)
+                        self.logger.info(f"Enhanced recognition: {name} with confidence {confidence:.2f}")
+            else:
+                enhanced_frame = self.image_processor.enhance_image_quality(frame)
+                aligned_faces = self.image_processor.detect_and_align_faces(enhanced_frame)
+                with self.face_data_lock:
+                    known_encodings = [enc for enc in self.known_face_encodings if enc is not None]
+                    known_names = self.known_face_names.copy()
+                for face_image, face_location in aligned_faces:
+                    optimized_face = self.image_processor.optimize_face_for_encoding(face_image)
+                    rgb_face = cv2.cvtColor(optimized_face, cv2.COLOR_BGR2RGB)
+                    face_encodings = face_recognition.face_encodings(
+                        rgb_face, 
+                        num_jitters=10, 
+                        model='large'
+                    )
+                    if not face_encodings:
+                        continue
+                    face_encoding = face_encodings[0]
+                    name, confidence, access_result = self._enhanced_face_matching(
+                        face_encoding, known_encodings, known_names
+                    )
+                    result = FaceRecognitionResult(
+                        person_id=self.known_face_ids.get(name, f"ID_{hash(name) % 1000}"),
+                        name=name,
+                        confidence=confidence,
+                        location=face_location,
+                        access_result=access_result
+                    )
+                    results.append(result)
+                    self.logger.info(f"Enhanced recognition: {name} with confidence {confidence:.2f}")
         except Exception as e:
             self.logger.error(f"Enhanced face recognition error: {e}")
         return results
@@ -542,7 +422,7 @@ class SecuritySystem:
         """Enhanced continuous face recognition loop"""
         self.logger.info("Enhanced face recognition loop started")
         frame_skip_counter = 0
-        process_every_n_frames = 3  # Process every 3rd frame for better performance
+        process_every_n_frames = 3
         while self.recognition_active and not self.shutdown_event.is_set():
             try:
                 frame = self.get_frame()
@@ -780,7 +660,7 @@ class SecuritySystem:
         if self.recognition_thread and self.recognition_thread.is_alive():
             self.shutdown_event.set()
             self.recognition_thread.join(timeout=5)
-            self.shutdown_event.clear() # Clear event for future use
+            self.shutdown_event.clear()
         self.logger.info("Enhanced continuous face recognition stopped")
 
     def _start_server_sync(self):
@@ -808,48 +688,4 @@ class SecuritySystem:
                 time.sleep(60)
             except Exception as e:
                 self.logger.error(f"Enhanced server sync loop error: {e}")
-                
                 time.sleep(60)
-    def process_face_recognition_enhanced(self, frame: np.ndarray, bypass_cooldown: bool = False) -> List[FaceRecognitionResult]:
-        """Enhanced face recognition with optional cooldown bypass"""
-        results = []
-        if frame is None:
-            return results
-        if not bypass_cooldown:
-            with self.recognition_cooldown_check():
-                # ... (existing face recognition code)
-                return results
-        else:
-            # ... (existing face recognition code without cooldown check)
-            try:
-                enhanced_frame = self.image_processor.enhance_image_quality(frame)
-                aligned_faces = self.image_processor.detect_and_align_faces(enhanced_frame)
-                with self.face_data_lock:
-                    known_encodings = [enc for enc in self.known_face_encodings if enc is not None]
-                    known_names = self.known_face_names.copy()
-                for face_image, face_location in aligned_faces:
-                    optimized_face = self.image_processor.optimize_face_for_encoding(face_image)
-                    rgb_face = cv2.cvtColor(optimized_face, cv2.COLOR_BGR2RGB)
-                    face_encodings = face_recognition.face_encodings(
-                        rgb_face, 
-                        num_jitters=10, 
-                        model='large'
-                    )
-                    if not face_encodings:
-                        continue
-                    face_encoding = face_encodings[0]
-                    name, confidence, access_result = self._enhanced_face_matching(
-                        face_encoding, known_encodings, known_names
-                    )
-                    result = FaceRecognitionResult(
-                        person_id=self.known_face_ids.get(name, f"ID_{hash(name) % 1000}"),
-                        name=name,
-                        confidence=confidence,
-                        location=face_location,
-                        access_result=access_result
-                    )
-                    results.append(result)
-                    self.logger.info(f"Enhanced recognition: {name} with confidence {confidence:.2f}")
-            except Exception as e:
-                self.logger.error(f"Enhanced face recognition error: {e}")
-            return results
