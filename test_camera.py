@@ -1,15 +1,9 @@
-# Raspberry Pi Camera Test with OpenCV
-# Install required packages first:
-# sudo apt update
-# sudo apt install python3-opencv python3-pip
-# pip3 install opencv-python
-
 import cv2
 import numpy as np
 import time
 import os
 
-def test_camera_basic():q
+def test_camera_basic():
     """Basic camera test - display live feed"""
     print("Testing basic camera functionality...")
     
