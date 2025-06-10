@@ -1180,8 +1180,63 @@ def system_config():
                 updated.append('backend_url')
             
             if 'known_persons' in data and isinstance(data['known_persons'], list):
-                security_system.known_face_names = data['known_p discerunning face recognition system with Flask endpoints for managing a security system that includes face recognition, door lock control, and video streaming. The `add_person` method and `/person/add` endpoint have been added to allow registering new individuals in the system, updating the `known_face_names` list, logging the action, and providing TTS feedback.
+                security_system.known_face_names = data['known_persons']
+                updated.append('known_persons')
+            
+            return jsonify({
+                "message": "Configuration updated",
+                "updated_fields": updated,
+                "current_config": {
+                    "device_id": security_system.device_id,
+                    "recognition_cooldown": security_system.recognition_cooldown,
+                    "known_persons": security_system.known_face_names,
+                    "backend_url": security_system.backend_api_url
+                }
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
+@app.route('/person/add', methods=['POST'])
+def add_person():
+    """Add a new person to the security system"""
+    try:
+        data = request.get_json()
+        if not data or 'name' not in data:
+            return jsonify({"error": "Name is required"}), 400
+        
+        name = data['name'].strip()
+        if not name:
+            return jsonify({"error": "Name cannot be empty"}), 400
+        
+        # Optional: handle image data if provided
+        image = None
+        if 'image' in data:
+            try:
+                # Decode base64 image if provided
+                import base64
+                import numpy as np
+                image_data = base64.b64decode(data['image'])
+                nparr = np.frombuffer(image_data, np.uint8)
+                image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            except Exception as e:
+                return jsonify({"error": f"Invalid image data: {str(e)}"}), 400
+        
+        result = security_system.add_person(name, image)
+        
+        if result['success']:
+            return jsonify(result), 201
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"Received signal {signum}, shutting down...")
+    security_system.cleanup()
+    exit(0)
+    
 if __name__ == '__main__':
     # Register shutdown handlers
     signal.signal(signal.SIGINT, signal_handler)
