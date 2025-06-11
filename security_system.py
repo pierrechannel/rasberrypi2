@@ -10,14 +10,7 @@ from threading import Thread, Event, Lock
 from contextlib import contextmanager
 from collections import deque
 import random
-
-try:
-    import face_recognition
-    FACE_RECOGNITION_AVAILABLE = True
-except ImportError:
-    FACE_RECOGNITION_AVAILABLE = False
-    print("WARNING: face_recognition not available. Falling back to mock recognition.")
-
+from deepface import DeepFace
 from image_processor import EnhancedImageProcessor
 from data_poster import RobustDataPoster
 from tts_manager import TTSManager
@@ -33,7 +26,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 class SecuritySystem:
-    """Enhanced security system with improved face recognition - No offline storage"""
+    """Enhanced security system with DeepFace-based face recognition - No offline storage"""
 
     def __init__(self, device_id: str = "RPI_001"):
         self.device_id = device_id
@@ -67,9 +60,8 @@ class SecuritySystem:
         self.synced_person_ids = set()
         if self.tts_manager:
             self.tts_manager.speak("system_startup")
-        self.logger.info("Enhanced security system initialized")
-        if FACE_RECOGNITION_AVAILABLE:
-            self._load_known_faces_enhanced()
+        self.logger.info("Enhanced security system initialized with DeepFace")
+        self._load_known_faces_enhanced()
         self._start_continuous_recognition()
         self._start_server_sync()
 
@@ -114,7 +106,7 @@ class SecuritySystem:
         self.sync_with_server()
 
     def process_face_recognition_enhanced(self, frame: np.ndarray, bypass_cooldown: bool = False) -> List[FaceRecognitionResult]:
-        """Enhanced face recognition with optional cooldown bypass"""
+        """Enhanced face recognition with optional cooldown bypass using DeepFace"""
         results = []
         if frame is None:
             return results
@@ -129,14 +121,15 @@ class SecuritySystem:
                     for face_image, face_location in aligned_faces:
                         optimized_face = self.image_processor.optimize_face_for_encoding(face_image)
                         rgb_face = cv2.cvtColor(optimized_face, cv2.COLOR_BGR2RGB)
-                        face_encodings = face_recognition.face_encodings(
-                            rgb_face, 
-                            num_jitters=10, 
-                            model='large'
+                        embeddings = DeepFace.represent(
+                            img_path=rgb_face,
+                            model_name="VGG-Face",
+                            enforce_detection=False,
+                            detector_backend="skip"
                         )
-                        if not face_encodings:
+                        if not embeddings or len(embeddings) == 0:
                             continue
-                        face_encoding = face_encodings[0]
+                        face_encoding = np.array(embeddings[0]["embedding"])
                         name, confidence, access_result = self._enhanced_face_matching(
                             face_encoding, known_encodings, known_names
                         )
@@ -158,14 +151,15 @@ class SecuritySystem:
                 for face_image, face_location in aligned_faces:
                     optimized_face = self.image_processor.optimize_face_for_encoding(face_image)
                     rgb_face = cv2.cvtColor(optimized_face, cv2.COLOR_BGR2RGB)
-                    face_encodings = face_recognition.face_encodings(
-                        rgb_face, 
-                        num_jitters=10, 
-                        model='large'
+                    embeddings = DeepFace.represent(
+                        img_path=rgb_face,
+                        model_name="VGG-Face",
+                        enforce_detection=False,
+                        detector_backend="skip"
                     )
-                    if not face_encodings:
+                    if not embeddings or len(embeddings) == 0:
                         continue
-                    face_encoding = face_encodings[0]
+                    face_encoding = np.array(embeddings[0]["embedding"])
                     name, confidence, access_result = self._enhanced_face_matching(
                         face_encoding, known_encodings, known_names
                     )
@@ -184,15 +178,24 @@ class SecuritySystem:
 
     def _enhanced_face_matching(self, face_encoding: np.ndarray, known_encodings: List, 
                               known_names: List[str]) -> Tuple[str, float, AccessResult]:
-        """Enhanced face matching with multiple validation techniques"""
+        """Enhanced face matching using DeepFace-style distance metrics"""
         if not known_encodings:
             return "Unknown", 0.0, AccessResult.UNKNOWN
         try:
-            face_distances = face_recognition.face_distance(known_encodings, face_encoding)
-            tolerance_strict = 0.4
-            tolerance_normal = 0.6
-            best_match_index = np.argmin(face_distances)
-            best_distance = face_distances[best_match_index]
+            distances = []
+            for known_enc in known_encodings:
+                if known_enc is not None:
+                    cosine_distance = np.dot(face_encoding, known_enc) / (
+                        np.linalg.norm(face_encoding) * np.linalg.norm(known_enc)
+                    )
+                    similarity = (cosine_distance + 1) / 2
+                    distances.append(1 - similarity)
+                else:
+                    distances.append(1.0)
+            tolerance_strict = 0.3
+            tolerance_normal = 0.5
+            best_match_index = np.argmin(distances)
+            best_distance = distances[best_match_index]
             confidence = (1 - best_distance) * 100
             if best_distance <= tolerance_strict:
                 name = known_names[best_match_index]
@@ -335,7 +338,7 @@ class SecuritySystem:
                 if image is None:
                     continue
                 encoding = self._generate_enhanced_encoding(image)
-                if encoding is None and FACE_RECOGNITION_AVAILABLE:
+                if encoding is None:
                     continue
                 with self.face_data_lock:
                     self.known_face_names.append(name)
@@ -369,24 +372,23 @@ class SecuritySystem:
             return None
 
     def _generate_enhanced_encoding(self, image: np.ndarray) -> Optional[np.ndarray]:
-        """Generate high-quality face encoding"""
-        if not FACE_RECOGNITION_AVAILABLE:
-            return None
+        """Generate high-quality face encoding using DeepFace"""
         try:
             aligned_faces = self.image_processor.detect_and_align_faces(image)
             for face_image, _ in aligned_faces:
                 optimized_face = self.image_processor.optimize_face_for_encoding(face_image)
                 rgb_face = cv2.cvtColor(optimized_face, cv2.COLOR_BGR2RGB)
-                encodings = face_recognition.face_encodings(
-                    rgb_face,
-                    num_jitters=15,
-                    model='large'
+                embeddings = DeepFace.represent(
+                    img_path=rgb_face,
+                    model_name="VGG-Face",
+                    enforce_detection=False,
+                    detector_backend="skip"
                 )
-                if encodings:
-                    return encodings[0]
+                if embeddings and isinstance(embeddings, list) and len(embeddings) > 0:
+                    return np.array(embeddings[0]["embedding"])
             return None
         except Exception as e:
-            self.logger.error(f"Enhanced encoding generation error: {e}")
+            self.logger.error(f"DeepFace encoding generation error: {e}")
             return None
 
     def _mock_recognition(self, frame: np.ndarray) -> List[FaceRecognitionResult]:
@@ -526,10 +528,9 @@ class SecuritySystem:
                     quality_score = self._calculate_frame_quality(enhanced_image)
                     if quality_score < 0.3:
                         raise ValueError("Image quality too low for reliable recognition")
-                    if FACE_RECOGNITION_AVAILABLE:
-                        face_encoding = self._generate_enhanced_encoding(enhanced_image)
-                        if face_encoding is None:
-                            raise ValueError("No face detected or encoding failed")
+                    face_encoding = self._generate_enhanced_encoding(enhanced_image)
+                    if face_encoding is None:
+                        raise ValueError("No face detected or encoding failed")
                     self.logger.info(f"Person {name} added with quality score: {quality_score:.2f}")
                 self.known_face_names.append(name)
                 self.known_face_encodings.append(face_encoding)
@@ -593,7 +594,7 @@ class SecuritySystem:
             "last_sync_time": datetime.datetime.fromtimestamp(self.last_sync_time).isoformat() if self.last_sync_time else None,
             "enhancement_features": {
                 "image_enhancement": True,
-                "face_alignment": FACE_RECOGNITION_AVAILABLE,
+                "face_alignment": True,
                 "multi_frame_validation": True,
                 "adaptive_cooldown": True,
                 "quality_scoring": True,
@@ -677,8 +678,8 @@ class SecuritySystem:
         self.logger.info("Enhanced server sync thread started")
 
     def _sync_loop(self):
-        """Enhanced periodical server synchronization"""
-        self.logger.info("Enhanced server sync loop started")
+        """Enhanced periodical server synchronization with DeepFace integration"""
+        self.logger.info("Enhanced server sync loop started with DeepFace")
         while not self.shutdown_event.is_set():
             try:
                 current_time = time.time()
