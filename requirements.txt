@@ -1,5 +1,5 @@
-fflask==2.0.1
-opencv-python-headless==4.10.0.84
+flask==2.0.1
+opencv-python-headless==4.9.0.80  # Stable version with aarch64 support
 numpy==1.26.4
 pyttsx3==2.90
 requests==2.28.1
