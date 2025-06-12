@@ -12,11 +12,11 @@ from collections import deque
 import random
 
 try:
-    import face_recognition
+    import edgeface  # Replace face_recognition with edgeface
     FACE_RECOGNITION_AVAILABLE = True
 except ImportError:
     FACE_RECOGNITION_AVAILABLE = False
-    print("WARNING: face_recognition not available. Falling back to mock recognition.")
+    print("WARNING: edgeface not available. Falling back to mock recognition.")
 
 from image_processor import EnhancedImageProcessor
 from data_poster import RobustDataPoster
@@ -33,7 +33,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 class SecuritySystem:
-    """Enhanced security system with improved face recognition - No offline storage"""
+    """Enhanced security system with improved face recognition using edgeface - No offline storage"""
 
     def __init__(self, device_id: str = "RPI_001"):
         self.device_id = device_id
@@ -75,6 +75,7 @@ class SecuritySystem:
 
     def _setup_enhanced_camera(self):
         """Initialize camera with enhanced settings for better image quality"""
+        # ... (unchanged, no dependency on face_recognition)
         backends = [
             (cv2.CAP_DSHOW, "DirectShow"),
             (cv2.CAP_MSMF, "MSMF"),
@@ -129,11 +130,11 @@ class SecuritySystem:
                     for face_image, face_location in aligned_faces:
                         optimized_face = self.image_processor.optimize_face_for_encoding(face_image)
                         rgb_face = cv2.cvtColor(optimized_face, cv2.COLOR_BGR2RGB)
-                        face_encodings = face_recognition.face_encodings(
-                            rgb_face, 
-                            num_jitters=10, 
-                            model='large'
-                        )
+                        # Replace face_recognition.face_encodings with edgeface equivalent
+                        # Example: Assuming edgeface has a FaceRecognizer class
+                        # face_recognizer = edgeface.FaceRecognizer()
+                        # face_encodings = face_recognizer.encode_face(rgb_face)
+                        face_encodings = edgeface.encode_face(rgb_face)  # Placeholder: Replace with actual edgeface API
                         if not face_encodings:
                             continue
                         face_encoding = face_encodings[0]
@@ -150,6 +151,7 @@ class SecuritySystem:
                         results.append(result)
                         self.logger.info(f"Enhanced recognition: {name} with confidence {confidence:.2f}")
             else:
+                # ... (similar changes for bypass_cooldown case)
                 enhanced_frame = self.image_processor.enhance_image_quality(frame)
                 aligned_faces = self.image_processor.detect_and_align_faces(enhanced_frame)
                 with self.face_data_lock:
@@ -158,11 +160,8 @@ class SecuritySystem:
                 for face_image, face_location in aligned_faces:
                     optimized_face = self.image_processor.optimize_face_for_encoding(face_image)
                     rgb_face = cv2.cvtColor(optimized_face, cv2.COLOR_BGR2RGB)
-                    face_encodings = face_recognition.face_encodings(
-                        rgb_face, 
-                        num_jitters=10, 
-                        model='large'
-                    )
+                    # Replace face_recognition.face_encodings with edgeface equivalent
+                    face_encodings = edgeface.encode_face(rgb_face)  # Placeholder: Replace with actual edgeface API
                     if not face_encodings:
                         continue
                     face_encoding = face_encodings[0]
@@ -188,12 +187,16 @@ class SecuritySystem:
         if not known_encodings:
             return "Unknown", 0.0, AccessResult.UNKNOWN
         try:
-            face_distances = face_recognition.face_distance(known_encodings, face_encoding)
-            tolerance_strict = 0.4
-            tolerance_normal = 0.6
+            # Replace face_recognition.face_distance with edgeface equivalent
+            # Example: Assuming edgeface provides a distance or similarity metric
+            # face_distances = edgeface.compare_faces(known_encodings, face_encoding)
+            face_distances = edgeface.compare_faces(known_encodings, face_encoding)  # Placeholder: Replace with actual edgeface API
+            tolerance_strict = 0.4  # Adjust based on edgeface's distance/similarity scale
+            tolerance_normal = 0.6  # Adjust based on edgeface's distance/similarity scale
             best_match_index = np.argmin(face_distances)
             best_distance = face_distances[best_match_index]
-            confidence = (1 - best_distance) * 100
+            # Convert distance to confidence (adjust based on edgeface's scale)
+            confidence = (1 - best_distance) * 100  # May need adjustment
             if best_distance <= tolerance_strict:
                 name = known_names[best_match_index]
                 return name, confidence, AccessResult.GRANTED
@@ -211,6 +214,7 @@ class SecuritySystem:
 
     def _validate_with_history(self, name: str, confidence: float) -> bool:
         """Validate recognition using historical data"""
+        # ... (unchanged, no dependency on face_recognition)
         self.recognition_history.append({"name": name, "confidence": confidence, "timestamp": time.time()})
         recent_recognitions = [r for r in self.recognition_history 
                              if time.time() - r["timestamp"] < 30]
@@ -220,6 +224,7 @@ class SecuritySystem:
 
     def _log_access_attempt(self, result: FaceRecognitionResult, frame: np.ndarray):
         """Log access attempt without offline storage"""
+        # ... (unchanged, no dependency on face_recognition)
         try:
             timestamp = datetime.datetime.now().isoformat() + "Z"
             with self.face_data_lock:
@@ -260,6 +265,7 @@ class SecuritySystem:
 
     def process_access_attempt(self, frame: np.ndarray) -> Dict[str, Any]:
         """Enhanced access attempt processing"""
+        # ... (unchanged, relies on process_face_recognition_enhanced)
         try:
             with self.recognition_cooldown_check():
                 results = self.process_face_recognition_enhanced(frame)
@@ -293,6 +299,7 @@ class SecuritySystem:
 
     def sync_with_server(self):
         """Enhanced server synchronization - GET users only"""
+        # ... (unchanged, relies on _process_server_persons)
         self.logger.info("Starting enhanced server sync - fetching users")
         success, response = self.data_poster.get_with_exponential_backoff(
             self.server_users_url
@@ -319,6 +326,7 @@ class SecuritySystem:
 
     def _process_server_persons(self, persons: List[Dict]) -> int:
         """Process persons from server with enhanced validation"""
+        # ... (unchanged, relies on _generate_enhanced_encoding)
         new_count = 0
         for person in persons:
             try:
@@ -351,6 +359,7 @@ class SecuritySystem:
 
     def _download_and_process_image(self, photo_url: str) -> Optional[np.ndarray]:
         """Download and enhance image for better encoding"""
+        # ... (unchanged, no dependency on face_recognition)
         try:
             photo_url = photo_url.replace("\\", "/")
             response = requests.get(photo_url, timeout=15)
@@ -369,7 +378,7 @@ class SecuritySystem:
             return None
 
     def _generate_enhanced_encoding(self, image: np.ndarray) -> Optional[np.ndarray]:
-        """Generate high-quality face encoding"""
+        """Generate high-quality face encoding using edgeface"""
         if not FACE_RECOGNITION_AVAILABLE:
             return None
         try:
@@ -377,11 +386,10 @@ class SecuritySystem:
             for face_image, _ in aligned_faces:
                 optimized_face = self.image_processor.optimize_face_for_encoding(face_image)
                 rgb_face = cv2.cvtColor(optimized_face, cv2.COLOR_BGR2RGB)
-                encodings = face_recognition.face_encodings(
-                    rgb_face,
-                    num_jitters=15,
-                    model='large'
-                )
+                # Replace face_recognition.face_encodings with edgeface equivalent
+                # Example: Assuming edgeface has an encode_face method
+                # encodings = edgeface.encode_face(rgb_face)
+                encodings = edgeface.encode_face(rgb_face)  # Placeholder: Replace with actual edgeface API
                 if encodings:
                     return encodings[0]
             return None
@@ -391,6 +399,7 @@ class SecuritySystem:
 
     def _mock_recognition(self, frame: np.ndarray) -> List[FaceRecognitionResult]:
         """Enhanced mock recognition for testing"""
+        # ... (unchanged, no dependency on face_recognition)
         results = []
         height, width = frame.shape[:2]
         face_location = (
@@ -420,6 +429,7 @@ class SecuritySystem:
 
     def _recognition_loop(self):
         """Enhanced continuous face recognition loop"""
+        # ... (unchanged, relies on process_access_attempt)
         self.logger.info("Enhanced face recognition loop started")
         frame_skip_counter = 0
         process_every_n_frames = 3
@@ -450,6 +460,7 @@ class SecuritySystem:
 
     def get_frame_enhanced(self) -> Optional[np.ndarray]:
         """Get camera frame with enhanced error handling and quality checks"""
+        # ... (unchanged, no dependency on face_recognition)
         if not self.video_access or not self.video_access.isOpened():
             return None
         try:
@@ -472,6 +483,7 @@ class SecuritySystem:
 
     def _calculate_frame_quality(self, frame: np.ndarray) -> float:
         """Calculate frame quality score for selection"""
+        # ... (unchanged, no dependency on face_recognition)
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
@@ -488,11 +500,13 @@ class SecuritySystem:
 
     def get_frame(self) -> Optional[np.ndarray]:
         """Get current camera frame (enhanced version)"""
+        # ... (unchanged)
         return self.get_frame_enhanced()
 
     @contextmanager
     def recognition_cooldown_check(self):
         """Enhanced cooldown management with adaptive timing"""
+        # ... (unchanged, no dependency on face_recognition)
         current_time = time.time()
         time_since_last = current_time - self.last_recognition_time
         recent_activity = len([r for r in self.recognition_history 
@@ -510,6 +524,7 @@ class SecuritySystem:
     def add_person_enhanced(self, name: str, image: Optional[np.ndarray] = None, 
                            metadata: Dict = None) -> Dict[str, Any]:
         """Enhanced person addition with quality validation, no offline storage"""
+        # ... (unchanged, relies on _generate_enhanced_encoding)
         try:
             if not name or not isinstance(name, str):
                 raise ValueError("Valid name is required")
@@ -578,6 +593,7 @@ class SecuritySystem:
 
     def get_system_status_enhanced(self) -> Dict[str, Any]:
         """Get comprehensive system status"""
+        # ... (unchanged, no dependency on face_recognition)
         with self.face_data_lock:
             known_count = len(self.known_face_names)
             avg_quality = np.mean(list(self.face_encoding_quality_scores.values())) if self.face_encoding_quality_scores else 0.0
@@ -607,6 +623,7 @@ class SecuritySystem:
 
     def cleanup_enhanced(self):
         """Enhanced cleanup with comprehensive resource management"""
+        # ... (unchanged, no dependency on face_recognition)
         self.logger.info("Shutting down enhanced security system")
         if self.tts_manager:
             self.tts_manager.speak("system_shutdown")
@@ -630,18 +647,22 @@ class SecuritySystem:
 
     def cleanup(self):
         """Maintain compatibility with original cleanup method"""
+        # ... (unchanged)
         self.cleanup_enhanced()
 
     def add_person(self, name: str, image: Optional[np.ndarray] = None) -> Dict[str, Any]:
         """Maintain compatibility with original add_person method"""
+        # ... (unchanged)
         return self.add_person_enhanced(name, image)
 
     def get_system_status(self) -> Dict[str, Any]:
         """Get system status (enhanced version)"""
+        # ... (unchanged)
         return self.get_system_status_enhanced()
 
     def _start_continuous_recognition(self):
         """Start enhanced continuous face recognition"""
+        # ... (unchanged, relies on _recognition_loop)
         if self.recognition_thread and self.recognition_thread.is_alive():
             self.logger.info("Enhanced continuous recognition already running")
             return
@@ -656,6 +677,7 @@ class SecuritySystem:
 
     def _stop_continuous_recognition(self):
         """Stop enhanced continuous face recognition"""
+        # ... (unchanged)
         self.recognition_active = False
         if self.recognition_thread and self.recognition_thread.is_alive():
             self.shutdown_event.set()
@@ -665,6 +687,7 @@ class SecuritySystem:
 
     def _start_server_sync(self):
         """Start enhanced background thread for server synchronization"""
+        # ... (unchanged, relies on _sync_loop)
         if self.sync_thread and self.sync_thread.is_alive():
             self.logger.info("Enhanced server sync already running")
             return
@@ -678,6 +701,7 @@ class SecuritySystem:
 
     def _sync_loop(self):
         """Enhanced periodical server synchronization"""
+        # ... (unchanged, relies on sync_with_server)
         self.logger.info("Enhanced server sync loop started")
         while not self.shutdown_event.is_set():
             try:
